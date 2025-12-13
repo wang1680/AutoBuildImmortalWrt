@@ -7,7 +7,7 @@ on:
         description: "选择luci版本"
         required: false
         default: "24.10.4"
-        type: choice
+        输入: choice
         options:
           - 24.10.0
           - 24.10.1
@@ -25,14 +25,14 @@ on:
       enable_store:
         description: "集成 store 商店"
         required: false
-        type: boolean
+        输入: boolean
         default: true
       include_docker:
         description: |
           是否编译 Docker 插件
         required: true
         default: 'yes'
-        type: choice
+        输入: choice
         options:
           - 'yes'
           - 'no'
@@ -40,7 +40,7 @@ on:
         description: "是否配置PPPoE拨号信息?"
         required: true
         default: 'no'
-        type: choice
+        输入: choice
         options:
         - 'yes'
         - 'no'
@@ -135,7 +135,7 @@ jobs:
           tag_name: Autobuild-x86-64
           body_path: ${{ github.workspace }}/router-info.md
           files: |
-            ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz
+            ${{ github.workspace }}/bin/targets/x86/64/*ext4-combined.img.gz
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
