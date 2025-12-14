@@ -12,7 +12,7 @@ on:
         description: "选择luci版本"
         required: false
         default: "24.10.4"
-        type: choice
+        输入: choice
         options:
           - 24.10.0
           - 24.10.1
@@ -27,7 +27,7 @@ on:
         description: "是否编译 Docker 插件"
         required: true
         default: 'yes'
-        type: choice
+        输入: choice
         options:
           - 'yes'
           - 'no'
@@ -106,7 +106,7 @@ jobs:
 
       - name: ✅ 复制固件到根目录
         run: |
-          cp ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz ${{ github.workspace }}
+          cp ${{ github.workspace }}/bin/targets/x86/64/*ext4-combined.img.gz ${{ github.workspace }}
 
       - name: ✅ 上传固件到 artifact (for ISO generation)
         uses: actions/upload-artifact@v4
@@ -137,7 +137,7 @@ jobs:
 
       - name: ✅ 制作 ISO
         run: |
-          firmware_file=$(ls *squashfs-combined-efi.img.gz)
+          firmware_file=$(ls *ext4-combined.img.gz)
           cd img-installer
           bash autobuild/autobuild.sh "../$firmware_file"
 
