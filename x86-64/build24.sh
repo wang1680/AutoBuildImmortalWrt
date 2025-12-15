@@ -3,7 +3,7 @@
 set -e
 
 # ==============================
-# 🔑 强制使用你的代理（关键修复）
+# 🔑 强制使用你的代理（适用于 curl）
 # ==============================
 PROXY_URL="http://wchenhong.cn:5998"
 
@@ -13,16 +13,17 @@ export https_proxy="$PROXY_URL"
 export HTTP_PROXY="$PROXY_URL"
 export HTTPS_PROXY="$PROXY_URL"
 
-# 可选：测试代理是否能访问 GitHub
+# 测试代理（使用 curl）
 echo "🔍 测试代理连通性..."
-if ! curl -s --connect-timeout 10 -x "$PROXY_URL" https://github.com/ > /dev/null; then
-    echo "⚠️ 警告：代理无法访问 GitHub，后续下载可能失败！"
+if ! curl -s --connect-timeout 10 --proxy "$PROXY_URL" https://github.com/ > /dev/null; then
+    echo "❌ 代理无法访问 GitHub，请检查服务器状态！"
+    exit 1
 else
     echo "✅ 代理工作正常"
 fi
 
 # ==============================
-# 常规配置
+# 配置
 # ==============================
 PROFILE=${PROFILE:-"1024"}
 INCLUDE_DOCKER=${INCLUDE_DOCKER:-"no"}
@@ -50,42 +51,43 @@ pppoe_password=$PPPOE_PASSWORD
 EOF
 
 # ==============================
-# 下载 OpenClash
+# 下载 OpenClash（使用 curl）
 # ==============================
 echo "📥 下载 OpenClash v0.47.028..."
 OPENCLASH_VERSION="0.47.028"
 OPENCLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v${OPENCLASH_VERSION}/luci-app-openclash_${OPENCLASH_VERSION}_all.ipk"
 
-if ! wget -q --timeout=60 --tries=3 -L --retry-connrefused -O luci-app-openclash.ipk "$OPENCLASH_URL"; then
-    echo "❌ OpenClash 下载失败（即使使用代理）"
+if ! curl -L --connect-timeout 30 --retry 3 --retry-delay 2 \
+    --proxy "$PROXY_URL" -o luci-app-openclash.ipk "$OPENCLASH_URL"; then
+    echo "❌ OpenClash 下载失败"
     exit 1
 fi
 echo "✅ OpenClash v${OPENCLASH_VERSION} 已就绪"
 
 # ==============================
-# 下载 Clash.Meta 内核（关键修复：先下载到文件，再解压）
+# 下载 Clash.Meta 内核（使用 curl + 文件验证）
 # ==============================
-echo "📥 从 OpenClash 官方源下载 Clash.Meta 内核（v3）..."
+echo "📥 下载 Clash.Meta 内核（v3）..."
 
 mkdir -p clash-core
 META_URL="https://github.com/vernesong/OpenClash/raw/meta/clash.meta-linux-amd64.tar.gz"
 TEMP_TGZ="/tmp/clash.meta.tgz"
 
-# 尝试下载到临时文件
-if wget -q --timeout=60 --tries=3 -L --retry-connrefused -O "$TEMP_TGZ" "$META_URL"; then
-    # 检查是否为有效 gzip 文件
-    if file "$TEMP_TGZ" | grep -q "gzip compressed"; then
-        tar -xz -C clash-core -f "$TEMP_TGZ" clash.meta
-        rm -f "$TEMP_TGZ"
-    else
-        echo "❌ 下载内容不是 gzip 文件（可能是 HTML 错误页）"
-        echo "内容预览（前200字节）："
-        head -c 200 "$TEMP_TGZ"
-        rm -f "$TEMP_TGZ"
-        exit 1
-    fi
+if ! curl -L --connect-timeout 60 --retry 3 --retry-delay 2 \
+    --proxy "$PROXY_URL" -o "$TEMP_TGZ" "$META_URL"; then
+    echo "❌ Clash.Meta 下载失败"
+    exit 1
+fi
+
+# 验证是否为 gzip 文件
+if file "$TEMP_TGZ" | grep -q "gzip compressed"; then
+    tar -xz -C clash-core -f "$TEMP_TGZ" clash.meta
+    rm -f "$TEMP_TGZ"
 else
-    echo "❌ wget 下载失败"
+    echo "❌ 下载内容无效（可能是 HTML 错误页）"
+    echo "前 200 字节内容："
+    head -c 200 "$TEMP_TGZ"
+    rm -f "$TEMP_TGZ"
     exit 1
 fi
 
@@ -94,17 +96,17 @@ META_VERSION=$($clash-core/clash.meta -v 2>&1 | head -n1 | cut -d' ' -f3)
 echo "✅ Clash.Meta 内核 [$META_VERSION] 已就绪"
 
 # ==============================
-# 下载 GeoIP / GeoSite
+# 下载 GeoIP / GeoSite（使用 curl）
 # ==============================
 echo "🌍 下载 GeoIP 和 GeoSite 规则..."
-wget -q --timeout=30 --tries=2 -L --retry-connrefused \
-    https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -O GeoIP.dat
-wget -q --timeout=30 --tries=2 -L --retry-connrefused \
-    https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -O GeoSite.dat
+curl -L --connect-timeout 30 --retry 2 --proxy "$PROXY_URL" \
+    -o GeoIP.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
+curl -L --connect-timeout 30 --retry 2 --proxy "$PROXY_URL" \
+    -o GeoSite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
 echo "✅ 规则准备完毕"
 
 # ==============================
-# 软件包列表
+# 软件包列表（确保包含 curl）
 # ==============================
 PACKAGES="curl wget ca-certificates"
 PACKAGES="$PACKAGES luci-theme-argon luci-app-argon-config"
@@ -138,7 +140,7 @@ cp clash-core/clash.meta efi-files/etc/openclash/core/
 cp GeoIP.dat GeoSite.dat efi-files/etc/openclash/
 
 # ==============================
-# 构建固件
+# 构建
 # ==============================
 echo "📦 构建 generic (ext4) 固件..."
 make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="./generic-files" ROOTFS_PARTSIZE="$PROFILE"
@@ -147,7 +149,7 @@ echo "📦 构建 efi (ext4) 固件..."
 make image PROFILE="x86-64-efi" PACKAGES="$PACKAGES" FILES="./efi-files" ROOTFS_PARTSIZE="$PROFILE"
 
 # ==============================
-# 输出原始命名的 ext4 固件
+# 输出原始命名固件
 # ==============================
 OUTPUT_DIR="bin/targets/x86/64"
 
@@ -166,7 +168,6 @@ if [ -z "$EFI_IMG" ] || [ ! -f "$EFI_IMG" ]; then
     exit 1
 fi
 
-# 复制原始文件名（与你原来一致）
 cp "$GENERIC_IMG" "/builder/"
 cp "$EFI_IMG" "/builder/"
 
@@ -180,4 +181,4 @@ OpenClash: v${OPENCLASH_VERSION}
 代理地址: $PROXY_URL
 EOF
 
-echo "🎉 构建完成！固件已保存为原始命名格式。"
+echo "🎉 构建完成！固件已保存。"
