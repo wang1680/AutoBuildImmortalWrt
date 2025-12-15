@@ -7,19 +7,14 @@ echo "Starting 99-custom.sh at $(date)" >> $LOGFILE
 echo "编译固件大小为: $PROFILE MB"
 echo "Include Docker: $INCLUDE_DOCKER"
 
-# 获取当前时间戳
+# 时间戳用于唯一标识
 TIMESTAMP=$(date +%Y%m%d-%H%M)
+IMAGE_NAME="immortalwrt-x86-64-${TIMESTAMP}"
 
-# 定义要构建的固件配置：(描述, PROFILE值, 文件名后缀)
-declare -A FIRMWARES
-FIRMWARES["ext4"]="x86/64-generic-ext4-combined"
-FIRMWARES["efi"]="x86/64-generic-efi-combined"
-
-# 公共配置目录（PPPoE、OpenClash 等）
 FILES_DIR="/home/build/immortalwrt/files"
 mkdir -p "$FILES_DIR/etc/config"
 
-# 创建 pppoe 配置（只需一次）
+# PPPoE 配置
 cat << EOF > "$FILES_DIR/etc/config/pppoe-settings"
 enable_pppoe=${ENABLE_PPPOE}
 pppoe_account=${PPPOE_ACCOUNT}
@@ -29,27 +24,24 @@ EOF
 echo "cat pppoe-settings"
 cat "$FILES_DIR/etc/config/pppoe-settings"
 
-# 同步第三方插件（只需一次）
-if [ -z "$CUSTOM_PACKAGES" ]; then
-  echo "⚪️ 未选择任何第三方软件包"
-else
-  echo "🔄 正在同步第三方软件仓库 via proxy..."
+# 第三方插件（通过代理）
+if [ -n "$CUSTOM_PACKAGES" ]; then
+  echo "🔄 同步第三方仓库 via proxy..."
   git clone --depth=1 https://proxy.6866686.xyz/https://github.com/wukongdaily/store.git /tmp/store-run-repo
   mkdir -p /home/build/immortalwrt/extra-packages
   cp -r /tmp/store-run-repo/run/x86/* /home/build/immortalwrt/extra-packages/
-  echo "✅ Run files copied:"
-  ls -lh /home/build/immortalwrt/extra-packages/*.run
   sh shell/prepare-packages.sh
-  ls -lah /home/build/immortalwrt/packages/
+else
+  echo "⚪️ 未选择任何第三方软件包"
 fi
 
-# 构建包列表（不含 Samba）
+# 包列表（已移除 Samba）
 PACKAGES=""
 PACKAGES="$PACKAGES curl"
 PACKAGES="$PACKAGES luci-i18n-diskman-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-firewall-zh-cn"
 PACKAGES="$PACKAGES luci-theme-argon"
-PACKAGES="$PACKAGES luci-app-argin-config"
+PACKAGES="$PACKAGES luci-app-argon-config"
 PACKAGES="$PACKAGES luci-i18n-argon-config-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-package-manager-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-ttyd-zh-cn"
@@ -64,49 +56,43 @@ PACKAGES="$PACKAGES $CUSTOM_PACKAGES"
 # Docker 支持
 if [ "$INCLUDE_DOCKER" = "yes" ]; then
     PACKAGES="$PACKAGES luci-i18n-dockerman-zh-cn"
-    echo "Adding package: luci-i18n-dockerman-zh-cn"
 fi
 
 # OpenClash 内核（通过代理下载）
 if echo "$PACKAGES" | grep -q "luci-app-openclash"; then
-    echo "✅ 已选择 luci-app-openclash，正在通过代理下载内核..."
+    echo "✅ 下载 OpenClash 内核 via proxy..."
     mkdir -p "$FILES_DIR/etc/openclash/core"
-    META_URL="https://proxy.6866686.xyz/https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz"
-    wget -qO- "$META_URL" | tar xOvz > "$FILES_DIR/etc/openclash/core/clash_meta"
+    wget -qO- "https://proxy.6866686.xyz/https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz" | tar xOvz > "$FILES_DIR/etc/openclash/core/clash_meta"
     chmod +x "$FILES_DIR/etc/openclash/core/clash_meta"
     wget -q "https://proxy.6866686.xyz/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -O "$FILES_DIR/etc/openclash/GeoIP.dat"
     wget -q "https://proxy.6866686.xyz/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -O "$FILES_DIR/etc/openclash/GeoSite.dat"
-else
-    echo "⚪️ 未选择 luci-app-openclash"
 fi
 
-# 开始构建每种固件
-for type in "${!FIRMWARES[@]}"; do
-    PROFILE_VAL="${FIRMWARES[$type]}"
-    IMAGE_NAME="immortalwrt-x86-64-${type}-${TIMESTAMP}"
+# ✅ 构建一次，自动生成 ext4 + efi + squashfs
+echo "$(date '+%Y-%m-%d %H:%M:%S') - 开始构建固件..."
 
-    echo
-    echo "=============================================="
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - 开始构建 ${type} 固件 (PROFILE=${PROFILE_VAL})"
-    echo "输出文件名前缀: ${IMAGE_NAME}"
-    echo "=============================================="
+make image \
+    PROFILE="generic" \
+    PACKAGES="$PACKAGES" \
+    FILES="$FILES_DIR" \
+    ROOTFS_PARTSIZE="$PROFILE" \
+    IMAGE_NAME="$IMAGE_NAME"
 
-    make image \
-        PROFILE="$PROFILE_VAL" \
-        PACKAGES="$PACKAGES" \
-        FILES="$FILES_DIR" \
-        ROOTFS_PARTSIZE="$PROFILE" \
-        IMAGE_NAME="$IMAGE_NAME"
+if [ $? -ne 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - ❌ 构建失败！"
+    exit 1
+fi
 
-    if [ $? -ne 0 ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - ❌ 构建失败: ${type} 固件"
-        exit 1
-    fi
+# ✅ 删除不需要的 squashfs 镜像
+SQUASHFS_FILE="bin/targets/x86/64/${IMAGE_NAME}-generic-squashfs-combined.img.gz"
+if [ -f "$SQUASHFS_FILE" ]; then
+    echo "🗑️ 删除不需要的 squashfs 镜像: $(basename "$SQUASHFS_FILE")"
+    rm -f "$SQUASHFS_FILE"
+else
+    echo "⚠️ 未找到 squashfs 镜像（可能未生成）"
+fi
 
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - ✅ ${type} 固件构建成功！"
-done
-
+# 列出最终保留的镜像
 echo
-echo "🎉 所有固件构建完成！"
-echo "📁 输出路径示例: /home/build/immortalwrt/bin/targets/x86/64/"
-echo "   - 包含 ext4 和 efi 两个版本，均带时间戳，不会互相覆盖。"
+echo "✅ 构建完成！保留的固件："
+ls -1 bin/targets/x86/64/${IMAGE_NAME}-generic-{ext4,efi}-combined.img.gz 2>/dev/null || echo "❌ 未找到 ext4 或 efi 镜像"
