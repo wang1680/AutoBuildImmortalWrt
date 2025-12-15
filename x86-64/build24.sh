@@ -1,16 +1,17 @@
 #!/bin/bash
+
 # Log file for debugging
 source shell/custom-packages.sh
 echo "第三方软件包: $CUSTOM_PACKAGES"
 LOGFILE="/tmp/uci-defaults-log.txt"
-echo "Starting 99-custom.sh at $(date)" >> $LOGFILE
+echo "Starting build script at $(date)" >> "$LOGFILE"
 echo "编译固件大小为: $PROFILE MB"
 echo "Include Docker: $INCLUDE_DOCKER"
 
 echo "Create pppoe-settings"
-mkdir -p  /home/build/immortalwrt/files/etc/config
+mkdir -p /home/build/immortalwrt/files/etc/config
 
-# 创建pppoe配置文件 yml传入环境变量ENABLE_PPPOE等 写入配置文件 供99-custom.sh读取
+# 创建 pppoe 配置文件（由 CI 环境变量传入）
 cat << EOF > /home/build/immortalwrt/files/etc/config/pppoe-settings
 enable_pppoe=${ENABLE_PPPOE}
 pppoe_account=${PPPOE_ACCOUNT}
@@ -20,30 +21,36 @@ EOF
 echo "cat pppoe-settings"
 cat /home/build/immortalwrt/files/etc/config/pppoe-settings
 
-if [ -z "$CUSTOM_PACKAGES" ]; then
-  echo "⚪️ 未选择 任何第三方软件包"
-else
-  # ============= 同步第三方插件库==============
-  # 同步第三方软件仓库run/ipk
-  echo "🔄 正在同步第三方软件仓库 Cloning run file repo..."
-  git clone --depth=1 https://github.com/wukongdaily/store.git /tmp/store-run-repo
+# ============= 移除 wukongdaily/store 依赖（改用官方源） ============
+# 不再使用 store 的静态 .ipk，而是通过 feeds 编译最新源码
+echo "🔄 跳过 wukongdaily/store，改用官方插件源..."
 
-  # 拷贝 run/x86 下所有 run 文件和ipk文件 到 extra-packages 目录
-  mkdir -p /home/build/immortalwrt/extra-packages
-  cp -r /tmp/store-run-repo/run/x86/* /home/build/immortalwrt/extra-packages/
+# ============= 添加官方插件源（PassWall2 + OpenClash） ============
+echo "🔧 添加官方 feeds 源..."
 
-  echo "✅ Run files copied to extra-packages:"
-  ls -lh /home/build/immortalwrt/extra-packages/*.run
-  # 解压并拷贝ipk到packages目录
-  sh shell/prepare-packages.sh
-  ls -lah /home/build/immortalwrt/packages/
-fi
+# 进入 immortalwrt 目录（假设当前已在 /home/build/immortalwrt）
+cd /home/build/immortalwrt || { echo "❌ Failed to enter immortalwrt dir"; exit 1; }
 
-# 输出调试信息
-echo "$(date '+%Y-%m-%d %H:%M:%S') - 开始构建固件..."
+# 备份原 feeds.conf
+cp feeds.conf.default feeds.conf.default.bak 2>/dev/null
 
-# ============= imm仓库内的插件==============
-# 定义所需安装的包列表 下列插件你都可以自行删减
+# 移除可能存在的旧 store 源
+sed -i '/wukongdaily\/store/d' feeds.conf.default
+
+# 添加官方源
+cat << 'EOF' >> feeds.conf.default
+src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main
+src-git passwall_luci https://github.com/xiaorouju/openwrt-passwall.git;main
+src-git openclash https://github.com/vernesong/OpenClash.git;master
+EOF
+
+# 更新 feeds 并安装插件
+./scripts/feeds update -a
+./scripts/feeds install -a -p passwall_packages
+./scripts/feeds install -a -p passwall_luci
+./scripts/feeds install -a -p openclash
+
+# ============= 定义要包含的软件包 ============
 PACKAGES=""
 PACKAGES="$PACKAGES curl"
 PACKAGES="$PACKAGES luci-i18n-diskman-zh-cn"
@@ -51,53 +58,76 @@ PACKAGES="$PACKAGES luci-i18n-firewall-zh-cn"
 PACKAGES="$PACKAGES luci-theme-argon"
 PACKAGES="$PACKAGES luci-app-argon-config"
 PACKAGES="$PACKAGES luci-i18n-argon-config-zh-cn"
-#24.10
 PACKAGES="$PACKAGES luci-i18n-package-manager-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-ttyd-zh-cn"
-PACKAGES="$PACKAGES luci-i18n-passwall-zh-cn"
+# --- 使用 PassWall2（最新版） ---
+PACKAGES="$PACKAGES luci-app-passwall2"
+PACKAGES="$PACKAGES luci-i18n-passwall2-zh-cn"
+# --- OpenClash（从 feeds 安装）---
 PACKAGES="$PACKAGES luci-app-openclash"
 PACKAGES="$PACKAGES luci-i18n-homeproxy-zh-cn"
 PACKAGES="$PACKAGES openssh-sftp-server"
-PACKAGES="$PACKAGES luci-i18n-samba4-zh-cn"
 # 文件管理器
 PACKAGES="$PACKAGES luci-i18n-filemanager-zh-cn"
-# 静态文件服务器dufs(推荐)
+# 静态文件服务器 dufs
 PACKAGES="$PACKAGES luci-i18n-dufs-zh-cn"
-# ======== shell/custom-packages.sh =======
-# 合并imm仓库以外的第三方插件
-PACKAGES="$PACKAGES $CUSTOM_PACKAGES"
 
+# 合并 custom-packages.sh 中的额外包
+if [ -n "$CUSTOM_PACKAGES" ]; then
+    PACKAGES="$PACKAGES $CUSTOM_PACKAGES"
+fi
 
-# 判断是否需要编译 Docker 插件
+# Docker 支持
 if [ "$INCLUDE_DOCKER" = "yes" ]; then
     PACKAGES="$PACKAGES luci-i18n-dockerman-zh-cn"
     echo "Adding package: luci-i18n-dockerman-zh-cn"
 fi
 
-# 若构建openclash 则添加内核
+# ============= 下载 OpenClash 内核（linux-amd64-v3） ============
 if echo "$PACKAGES" | grep -q "luci-app-openclash"; then
-    echo "✅ 已选择 luci-app-openclash，添加 openclash core"
+    echo "✅ 已选择 luci-app-openclash，下载 clash.meta (linux-amd64-v3) 内核..."
     mkdir -p files/etc/openclash/core
-    # Download clash_meta
-    META_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz"
-    wget -qO- $META_URL | tar xOvz > files/etc/openclash/core/clash_meta
-    chmod +x files/etc/openclash/core/clash_meta
-    # Download GeoIP and GeoSite
+
+    # 获取最新 release 中 linux-amd64-v3.tar.gz 的 URL
+    CLASH_META_URL=$(curl -s "https://api.github.com/repos/MetaCubeX/Clash.Meta/releases/latest" | \
+        grep "browser_download_url.*linux-amd64-v3.tar.gz" | head -1 | cut -d '"' -f 4)
+
+    if [ -n "$CLASH_META_URL" ]; then
+        echo "Downloading: $CLASH_META_URL"
+        wget -qO- "$CLASH_META_URL" | tar -xz -C files/etc/openclash/core clash.meta
+        chmod +x files/etc/openclash/core/clash.meta
+        echo "✅ Clash.Meta (v3) installed."
+    else
+        echo "❌ v3 内核未找到，尝试通用 amd64 版本..."
+        CLASH_META_URL=$(curl -s "https://api.github.com/repos/MetaCubeX/Clash.Meta/releases/latest" | \
+            grep "browser_download_url.*linux-amd64.tar.gz" | head -1 | cut -d '"' -f 4)
+        if [ -n "$CLASH_META_URL" ]; then
+            wget -qO- "$CLASH_META_URL" | tar -xz -C files/etc/openclash/core clash.meta
+            chmod +x files/etc/openclash/core/clash.meta
+            echo "✅ 通用 amd64 内核已安装。"
+        else
+            echo "❌ 无法下载任何 clash.meta 内核！"
+            exit 1
+        fi
+    fi
+
+    # 下载 GeoIP 和 GeoSite
+    echo "📥 下载 GeoIP 和 GeoSite 规则..."
     wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -O files/etc/openclash/GeoIP.dat
     wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -O files/etc/openclash/GeoSite.dat
 else
     echo "⚪️ 未选择 luci-app-openclash"
 fi
 
-# 构建镜像
+# ============= 构建固件 ============
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Building image with the following packages:"
 echo "$PACKAGES"
 
-make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="/home/build/immortalwrt/files" ROOTFS_PARTSIZE=$PROFILE
+make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="/home/build/immortalwrt/files" ROOTFS_PARTSIZE="$PROFILE"
 
 if [ $? -ne 0 ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Error: Build failed!"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - ❌ Build failed!"
     exit 1
 fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') - Build completed successfully."
+echo "$(date '+%Y-%m-%d %H:%M:%S') - ✅ Build completed successfully."
