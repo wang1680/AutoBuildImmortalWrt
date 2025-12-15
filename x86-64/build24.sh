@@ -20,32 +20,57 @@ pppoe_password=
 EOF
 
 # ==============================
-# 使用国内镜像下载（无需代理）
+# 下载 OpenClash（优先 jsDelivr，备用 ghproxy）
 # ==============================
-echo "📥 从镜像站下载 OpenClash v0.47.028..."
-curl -L --connect-timeout 30 --retry 3 \
+echo "📥 尝试从 jsDelivr 下载 OpenClash v0.47.028..."
+if ! curl -L --connect-timeout 30 --retry 2 \
     -o luci-app-openclash.ipk \
-    "https://mirror.ghproxy.com/https://github.com/vernesong/OpenClash/releases/download/v0.47.028/luci-app-openclash_0.47.028_all.ipk"
+    "https://cdn.jsdelivr.net/gh/vernesong/OpenClash@v0.47.028/luci-app-openclash_0.47.028_all.ipk"; then
+    echo "⚠️ jsDelivr 失败，尝试 ghproxy（跳过 SSL 验证）..."
+    if ! curl -L --connect-timeout 30 --retry 2 -k \
+        -o luci-app-openclash.ipk \
+        "https://mirror.ghproxy.com/https://github.com/vernesong/OpenClash/releases/download/v0.47.028/luci-app-openclash_0.47.028_all.ipk"; then
+        echo "❌ OpenClash 下载失败"
+        exit 1
+    fi
+fi
 
-echo "📥 从镜像站下载 Clash.Meta 内核..."
-curl -L --connect-timeout 30 --retry 3 \
+# ==============================
+# 下载 Clash.Meta 内核
+# ==============================
+echo "📥 下载 Clash.Meta 内核..."
+if ! curl -L --connect-timeout 30 --retry 2 \
     -o clash.meta.tgz \
-    "https://mirror.ghproxy.com/https://github.com/vernesong/OpenClash/raw/meta/clash.meta-linux-amd64.tar.gz"
+    "https://cdn.jsdelivr.net/gh/vernesong/OpenClash@meta/clash.meta-linux-amd64.tar.gz"; then
+    echo "⚠️ jsDelivr 失败，尝试 ghproxy（跳过 SSL 验证）..."
+    if ! curl -L --connect-timeout 30 --retry 2 -k \
+        -o clash.meta.tgz \
+        "https://mirror.ghproxy.com/https://github.com/vernesong/OpenClash/raw/meta/clash.meta-linux-amd64.tar.gz"; then
+        echo "❌ Clash.Meta 下载失败"
+        exit 1
+    fi
+fi
 
-# 解压内核
+# 解压
 mkdir -p clash-core
 tar -xz -C clash-core -f clash.meta.tgz clash.meta
 chmod +x clash-core/clash.meta
 META_VERSION=$($clash-core/clash.meta -v 2>&1 | head -n1 | cut -d' ' -f3)
 echo "✅ Clash.Meta [$META_VERSION] 就绪"
 
-# 下载 Geo 规则（也用镜像）
+# ==============================
+# GeoIP / GeoSite（使用 jsDelivr，证书安全）
+# ==============================
+echo "🌍 下载 Geo 规则..."
 curl -L --connect-timeout 30 --retry 2 \
     -o GeoIP.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat
 curl -L --connect-timeout 30 --retry 2 \
     -o GeoSite.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat
+echo "✅ 规则准备完毕"
 
-# 软件包
+# ==============================
+# 软件包 & 构建
+# ==============================
 PACKAGES="curl wget ca-certificates"
 PACKAGES="$PACKAGES luci-theme-argon luci-app-argon-config"
 PACKAGES="$PACKAGES luci-i18n-firewall-zh-cn"
@@ -60,7 +85,7 @@ if [ "$INCLUDE_DOCKER" = "yes" ]; then
     PACKAGES="$PACKAGES luci-i18n-dockerman-zh-cn"
 fi
 
-# 准备文件
+# 准备文件系统
 cp -r files generic-files
 mkdir -p generic-files/packages
 cp luci-app-openclash.ipk generic-files/packages/
