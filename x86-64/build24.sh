@@ -15,25 +15,22 @@ BASE_NAME="ImmortalWrt-24.10-OpenClash"
 echo "🚀 开始构建双版本固件（generic + efi）"
 echo "固件大小: ${PROFILE}MB | Docker: $INCLUDE_DOCKER"
 
-# ====== 使用容器内临时目录，避免挂载冲突 ======
 WORK_DIR="/tmp/build"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-# ====== 创建基础配置文件 ======
+# ====== 基础配置文件 ======
 mkdir -p files/etc/config
-
 cat << EOF > files/etc/config/pppoe-settings
 enable_pppoe=$ENABLE_PPPOE
 pppoe_account=$PPPOE_ACCOUNT
 pppoe_password=$PPPOE_PASSWORD
 EOF
 
-# ====== 【关键修正】下载 OpenClash v0.47.028（注意：使用 _all.ipk 命名）======
+# ====== 下载 OpenClash v0.47.028（注意：使用 _all.ipk）======
 echo "📥 下载 OpenClash v0.47.028..."
 OPENCLASH_VERSION="0.47.028"
-# ⚠️ 从 v0.47 开始，文件名格式为 luci-app-openclash_X.X.X_all.ipk（下划线）
 OPENCLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v${OPENCLASH_VERSION}/luci-app-openclash_${OPENCLASH_VERSION}_all.ipk"
 
 if ! wget -q --timeout=60 --tries=3 -L --retry-connrefused \
@@ -45,46 +42,43 @@ if ! wget -q --timeout=60 --tries=3 -L --retry-connrefused \
     if ! wget -q --timeout=60 --tries=3 -L --retry-connrefused \
         -O luci-app-openclash.ipk "$MIRROR_URL"; then
         
-        echo "❌ 所有下载方式均失败！请检查版本是否存在。"
+        echo "❌ OpenClash 下载失败！请检查版本是否存在。"
         exit 1
     fi
 fi
 
 echo "✅ OpenClash v${OPENCLASH_VERSION} 已就绪"
 
-# ====== 下载 Clash.Meta 内核（v3 优先）======
-echo "📥 下载 Clash.Meta 内核..."
+# ====== 下载 Clash.Meta 内核（OpenClash 官方源，v3，alpha-gxxxxxxx）======
+echo "📥 从 OpenClash 官方源下载最新 Clash.Meta 内核（v3）..."
+
 mkdir -p clash-core
 
-# 尝试 v3
-META_URL=$(curl -H "User-Agent: Mozilla/5.0 (AutoBuild)" -s "https://api.github.com/repos/MetaCubeX/Clash.Meta/releases/latest" | \
-    grep -o 'https://[^"]*linux-amd64-v3\.tar\.gz' | head -n1)
-
-if [ -z "$META_URL" ]; then
-    # 回退到通用 amd64
-    META_URL=$(curl -H "User-Agent: Mozilla/5.0 (AutoBuild)" -s "https://api.github.com/repos/MetaCubeX/Clash.Meta/releases/latest" | \
-        grep -o 'https://[^"]*linux-amd64\.tar\.gz' | head -n1)
-fi
-
-if [ -z "$META_URL" ]; then
-    echo "⚠️ 无法获取最新内核，使用兜底版本..."
-    META_URL="https://github.com/MetaCubeX/Clash.Meta/releases/download/Prerelease-Alpha/clash.meta-linux-amd64-v3.tar.gz"
-fi
+META_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash.meta-linux-amd64.tar.gz"
 
 if ! wget -q --timeout=60 --tries=3 -L --retry-connrefused -O- "$META_URL" | tar -xz -C clash-core clash.meta; then
-    echo "❌ Clash.Meta 内核下载或解压失败"
-    exit 1
+    echo "⚠️ 官方源失败，尝试镜像..."
+    MIRROR_URL="https://ghproxy.com/https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash.meta-linux-amd64.tar.gz"
+    if ! wget -q --timeout=60 --tries=3 -L --retry-connrefused -O- "$MIRROR_URL" | tar -xz -C clash-core clash.meta; then
+        echo "❌ Clash.Meta 内核下载失败！"
+        exit 1
+    fi
 fi
 
 chmod +x clash-core/clash.meta
 
-# GeoIP / GeoSite
+# 可选：打印内核版本（如 alpha-g99e68e9）
+META_VERSION=$($clash-core/clash.meta -v 2>&1 | head -n1 | cut -d' ' -f3)
+echo "✅ Clash.Meta 内核 [$META_VERSION] 已就绪"
+
+# ====== 下载 GeoIP / GeoSite 规则 ======
+echo "🌍 下载 GeoIP 和 GeoSite 规则..."
 wget -q --timeout=30 --tries=2 -L --retry-connrefused \
     https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -O GeoIP.dat
 wget -q --timeout=30 --tries=2 -L --retry-connrefused \
     https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -O GeoSite.dat
 
-echo "✅ 内核与规则已准备完毕"
+echo "✅ 规则准备完毕"
 
 # ====== 软件包列表 ======
 PACKAGES="curl wget ca-certificates"
@@ -102,7 +96,7 @@ if [ "$INCLUDE_DOCKER" = "yes" ]; then
 fi
 
 # ====== 准备 generic 版本 ======
-echo "🔧 准备 generic (BIOS) 版本..."
+echo "🔧 准备 generic (BIOS) 固件文件系统..."
 cp -r files generic-files
 mkdir -p generic-files/packages
 cp luci-app-openclash.ipk generic-files/packages/
@@ -111,7 +105,7 @@ cp clash-core/clash.meta generic-files/etc/openclash/core/
 cp GeoIP.dat GeoSite.dat generic-files/etc/openclash/
 
 # ====== 准备 efi 版本 ======
-echo "🔧 准备 efi (UEFI) 版本..."
+echo "🔧 准备 efi (UEFI) 固件文件系统..."
 cp -r files efi-files
 mkdir -p efi-files/packages
 cp luci-app-openclash.ipk efi-files/packages/
@@ -127,7 +121,7 @@ make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="./generic-files" ROOTFS
 echo "📦 构建 efi 固件..."
 make image PROFILE="x86-64-efi" PACKAGES="$PACKAGES" FILES="./efi-files" ROOTFS_PARTSIZE="$PROFILE"
 
-# ====== 输出结果到挂载目录（/builder）======
+# ====== 输出结果 ======
 OUTPUT_DIR="bin/targets/x86/64"
 
 GENERIC_IMG=$(find "$OUTPUT_DIR" -name "*generic*squashfs-combined.img.gz" | head -n1)
@@ -145,7 +139,7 @@ if [ -z "$EFI_IMG" ] || [ ! -f "$EFI_IMG" ]; then
     exit 1
 fi
 
-# 复制到挂载点（宿主机可见）
+# 复制到挂载目录（宿主机可见）
 cp "$GENERIC_IMG" "/builder/${BASE_NAME}-generic-${DATE_STR}.img.gz"
 cp "$EFI_IMG" "/builder/${BASE_NAME}-efi-${DATE_STR}.img.gz"
 
@@ -155,11 +149,11 @@ cat > "/builder/version-${DATE_STR}.txt" << EOF
 构建日期: $(date '+%Y-%m-%d %H:%M:%S')
 架构: x86-64
 包含:
-  - ${BASE_NAME}-generic-${DATE_STR}.img.gz （传统 BIOS/MBR 启动）
-  - ${BASE_NAME}-efi-${DATE_STR}.img.gz （UEFI/GPT 启动）
-插件: OpenClash v${OPENCLASH_VERSION} + Clash.Meta (v3)
-说明: 未设置 root 密码，首次登录请通过 Web 界面设置
+  - ${BASE_NAME}-generic-${DATE_STR}.img.gz （传统 BIOS 启动）
+  - ${BASE_NAME}-efi-${DATE_STR}.img.gz （UEFI 启动）
+插件: OpenClash v${OPENCLASH_VERSION}
+内核: Clash.Meta ($META_VERSION, v3 架构)
+说明: 首次登录请通过 Web 界面设置 root 密码
 EOF
 
-echo "🎉 双版本构建成功！"
-echo "📁 输出文件位于宿主机当前目录。"
+echo "🎉 双版本固件构建成功！"
