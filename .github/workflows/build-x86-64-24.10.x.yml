@@ -135,7 +135,7 @@ jobs:
           tag_name: Autobuild-x86-64
           body_path: ${{ github.workspace }}/router-info.md
           files: |
-            ${{ github.workspace }}bin/targets/x86/64/*ext4-combined*.img.gz
+            ./bin/targets/x86/64/*ext4-combined*.img.gz
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
