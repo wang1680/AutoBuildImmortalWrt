@@ -97,19 +97,17 @@ else
 fi
 
 # ==============================
-# 5️⃣ 预置 Clash Meta 内核（来自同一 Release）
+# 5️⃣ 预置 Clash Meta 内核（使用你验证有效的地址）
 # ==============================
-echo "⚙️ 预置 Clash Meta 内核（与插件版本严格匹配）..."
+echo "⚙️ 预置 Clash Meta 内核（使用 core/master 分支，你已验证有效）..."
 
-PROXIED_KERNEL_URL="https://proxy.6866686.xyz/https://github.com/vernesong/OpenClash/releases/download/${LATEST_TAG}/clash-linux-amd64.tar.gz"
+META_KERNEL_URL="https://proxy.6866686.xyz/https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz"
 
-if wget -q --timeout=30 --tries=3 "$PROXIED_KERNEL_URL" -O /tmp/clash.tar.gz && [ -s /tmp/clash.tar.gz ]; then
-    tar -xOzf /tmp/clash.tar.gz clash > "$FILES_DIR/etc/openclash/core/clash_meta"
+if wget -qO- "$META_KERNEL_URL" | tar xOvz > "$FILES_DIR/etc/openclash/core/clash_meta" 2>/dev/null; then
     chmod +x "$FILES_DIR/etc/openclash/core/clash_meta"
-    rm -f /tmp/clash.tar.gz
-    echo "✅ Meta 内核（$LATEST_TAG）预置成功"
+    echo "✅ Meta 内核预置成功（来自 core/master）"
 else
-    echo "❌ Meta 内核下载失败！URL: $PROXIED_KERNEL_URL"
+    echo "❌ Meta 内核下载失败！URL: $META_KERNEL_URL"
     exit 1
 fi
 
