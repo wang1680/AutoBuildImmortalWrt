@@ -2,31 +2,34 @@
 set -e
 
 # ==============================
-# 🔧 全局配置
+# 全局配置
 # ==============================
 PROXY="https://proxy.6866686.xyz"
 OPENCLASH_REPO="https://github.com/vernesong/OpenClash"
-OPENCLASH_LATEST_IPK="${PROXY}/${OPENCLASH_REPO}/releases/latest/download/luci-app-openclash_*.ipk"
-FALLBACK_VERSION="v0.47.028"
-FALLBACK_IPK_URL="${PROXY}/${OPENCLASH_REPO}/releases/download/${FALLBACK_VERSION}/luci-app-openclash_$(echo ${FALLBACK_VERSION} | tr -d 'v')-all.ipk"
 
-TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-OUTPUT_DIR="bin/targets/x86/64"
-FILES_DIR="/home/build/immortalwrt/files"
-mkdir -p "$FILES_DIR/etc/openclash/core" "$FILES_DIR/etc/config"
-
-# ==============================
-# 1. 加载自定义包 & 环境
-# ==============================
-source shell/custom-packages.sh
+# 加载自定义包
+if [ -f shell/custom-packages.sh ]; then
+    source shell/custom-packages.sh
+else
+    CUSTOM_PACKAGES=""
+fi
 
 echo "第三方软件包: $CUSTOM_PACKAGES"
 echo "编译固件大小为: ${PROFILE:-1024} MB"
 echo "Include Docker: ${INCLUDE_DOCKER:-no}"
 
-# ==============================
-# 2. PPPoE 配置
-# ==============================
+# 可配置 fallback 版本（支持带或不带 'v'）
+FALLBACK_VERSION_RAW="${OPENCLASH_FALLBACK_VERSION:-0.47.028}"
+# 统一标准化：移除可能存在的 'v'
+FALLBACK_VERSION_NUM="${FALLBACK_VERSION_RAW#v}"      # 如输入 v0.47.028 → 0.47.028
+FALLBACK_TAG="v${FALLBACK_VERSION_NUM}"              # 强制加 v 用于 URL
+
+TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+OUTPUT_DIR="bin/targets/x86/64"
+FILES_DIR="/home/build/immortalwrt/files"
+mkdir -p "$FILES_DIR/etc/config" "$FILES_DIR/packages"
+
+# === 1. PPPoE 配置 ===
 cat << EOF > "$FILES_DIR/etc/config/pppoe-settings"
 enable_pppoe=${ENABLE_PPPOE:-no}
 pppoe_account=${PPPOE_ACCOUNT:-}
@@ -36,24 +39,22 @@ EOF
 echo "当前 PPPoE 配置："
 cat "$FILES_DIR/etc/config/pppoe-settings"
 
-# ==============================
-# 3. 第三方插件（Store）
-# ==============================
+# === 2. 第三方插件（通过代理）===
 if [ -n "$CUSTOM_PACKAGES" ]; then
     echo "🔄 正在通过代理同步第三方仓库..."
-    git clone --depth=1 https://proxy.6866686.xyz/https://github.com/wukongdaily/store.git /tmp/store-run-repo
+    git clone --depth=1 "${PROXY}/https://github.com/wukongdaily/store.git" /tmp/store-run-repo
     mkdir -p /home/build/immortalwrt/extra-packages
     cp -r /tmp/store-run-repo/run/x86/* /home/build/immortalwrt/extra-packages/ 2>/dev/null || true
-    sh shell/prepare-packages.sh
+    if [ -f shell/prepare-packages.sh ]; then
+        sh shell/prepare-packages.sh
+    fi
 else
     echo "⚪️ 未选择任何第三方软件包"
 fi
 
-# ==============================
-# 4. 基础软件包列表（不含 OpenClash）
-# ==============================
+# === 3. 基础软件包列表（不包含 luci-app-openclash）===
 PACKAGES=""
-PACKAGES="$PACKAGES curl wget ca-certificates"
+PACKAGES="$PACKAGES curl ca-certificates wget"
 PACKAGES="$PACKAGES luci-i18n-diskman-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-firewall-zh-cn"
 PACKAGES="$PACKAGES luci-theme-argon"
@@ -73,83 +74,63 @@ if [ "${INCLUDE_DOCKER:-no}" = "yes" ]; then
     echo "✅ 已启用 Docker 支持"
 fi
 
-# ==============================
-# 5. 【强制】集成 OpenClash（必须成功）
-# ==============================
-echo
-echo "🔍 强制集成 OpenClash（开机即用）..."
+# === 4. 智能下载 OpenClash .ipk（带代理 + 容错）===
+echo "🔍 尝试获取最新 OpenClash 版本..."
 
-TMP_OC="/tmp/openclash-download"
-mkdir -p "$TMP_OC"
-EXTRA_PKG_DIR="/home/build/immortalwrt/extra-packages"
-mkdir -p "$EXTRA_PKG_DIR"
+LATEST_TAG=""
+VERSION_NUM=""
+IPK_FILENAME=""
+IPK_URL=""
 
-# 尝试下载最新版
-if timeout 20 wget -q --tries=2 -O "$TMP_OC/latest.ipk" "$OPENCLASH_LATEST_IPK" 2>/dev/null && [ -s "$TMP_OC/latest.ipk" ]; then
-    echo "✅ 使用最新版 OpenClash"
-    cp "$TMP_OC/latest.ipk" "$EXTRA_PKG_DIR/"
+# 尝试通过代理获取最新 release tag
+if LATEST_TAG=$(curl -s "${PROXY}/https://github.com/vernesong/OpenClash/releases/latest" | \
+    grep -o 'releases/tag/[^"]*' | head -n1 | cut -d'/' -f3) && [ -n "$LATEST_TAG" ]; then
+    echo "✅ 检测到最新版本: $LATEST_TAG"
+    VERSION_NUM="${LATEST_TAG#v}"
+    IPK_FILENAME="luci-app-openclash_${VERSION_NUM}_all.ipk"
+    IPK_URL="${OPENCLASH_REPO}/releases/download/${LATEST_TAG}/${IPK_FILENAME}"
 else
-    echo "⚠️ 最新版下载失败，回退到稳定版本 ${FALLBACK_VERSION}"
-    if ! timeout 20 wget -q --tries=2 -O "$TMP_OC/fallback.ipk" "$FALLBACK_IPK_URL" 2>/dev/null || [ ! -s "$TMP_OC/fallback.ipk" ]; then
-        echo "❌ FATAL: OpenClash 最新版和 fallback 版均下载失败！请检查代理或网络。"
-        exit 1
-    fi
-    cp "$TMP_OC/fallback.ipk" "$EXTRA_PKG_DIR/"
+    echo "⚠️ 无法获取最新版本，使用 fallback: ${FALLBACK_TAG}"
+    LATEST_TAG="${FALLBACK_TAG}"
+    VERSION_NUM="${FALLBACK_VERSION_NUM}"
+    IPK_FILENAME="luci-app-openclash_${VERSION_NUM}_all.ipk"
+    IPK_URL="${OPENCLASH_REPO}/releases/download/${FALLBACK_TAG}/${IPK_FILENAME}"
 fi
 
-# 强制加入构建
-PACKAGES="$PACKAGES luci-app-openclash"
-echo "✅ OpenClash 已加入固件"
+PROXIED_URL="${PROXY}/${IPK_URL}"
+echo "📥 尝试下载: $PROXIED_URL"
 
-# ==============================
-# 6. 预置 Meta 内核 + Geo 规则（确保开机即用）
-# ==============================
-echo "⚙️ 预置 Meta 内核与 Geo 规则..."
+# 下载 .ipk（带重试和超时）
+if wget -q --timeout=30 --tries=3 "$PROXIED_URL" -O "$FILES_DIR/packages/$IPK_FILENAME" && [ -s "$FILES_DIR/packages/$IPK_FILENAME" ]; then
+    echo "✅ 成功集成 OpenClash $LATEST_TAG"
+else
+    echo "❌ 下载失败！请检查以下信息："
+    echo "   - 版本号: $VERSION_NUM"
+    echo "   - 文件名: $IPK_FILENAME"
+    echo "   - 尝试 URL: $PROXIED_URL"
+    exit 1
+fi
 
-# Meta 内核
-META_URL="${PROXY}/https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz"
-if timeout 20 wget -qO- "$META_URL" | tar xOvz > "$FILES_DIR/etc/openclash/core/clash_meta" 2>/dev/null; then
+# === 5. 预置 Clash Meta 内核和规则 ===
+mkdir -p "$FILES_DIR/etc/openclash/core"
+echo "⏳ 下载 Clash Meta 内核..."
+if wget -qO- "${PROXY}/https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64.tar.gz" | tar xOvz > "$FILES_DIR/etc/openclash/core/clash_meta"; then
     chmod +x "$FILES_DIR/etc/openclash/core/clash_meta"
-    echo "✅ Meta 内核已预置"
+    echo "✅ Meta 内核预置成功"
 else
-    echo "⚠️ Meta 内核下载失败（首次启动时将自动下载）"
+    echo "⚠️ Meta 内核下载失败（首次启动将自动下载）"
 fi
 
-# GeoIP & GeoSite
-GEOIP_URL="${PROXY}/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
-GEOSITE_URL="${PROXY}/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+echo "⏳ 下载 GeoIP 和 GeoSite..."
+wget -q "${PROXY}/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -O "$FILES_DIR/etc/openclash/GeoIP.dat" && echo "✅ GeoIP.dat" || echo "⚠️ GeoIP 失败"
+wget -q "${PROXY}/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -O "$FILES_DIR/etc/openclash/GeoSite.dat" && echo "✅ GeoSite.dat" || echo "⚠️ GeoSite 失败"
 
-if timeout 20 wget -q "$GEOIP_URL" -O "$FILES_DIR/etc/openclash/GeoIP.dat"; then
-    echo "✅ GeoIP.dat 已预置"
-else
-    echo "⚠️ GeoIP.dat 下载失败"
-fi
-
-if timeout 20 wget -q "$GEOSITE_URL" -O "$FILES_DIR/etc/openclash/GeoSite.dat"; then
-    echo "✅ GeoSite.dat 已预置"
-else
-    echo "⚠️ GeoSite.dat 下载失败"
-fi
-
-# 创建必要目录（避免首次启动报错）
+# 创建必要目录
 mkdir -p "$FILES_DIR/etc/openclash/{backup,config,secret,yaml}"
 
-# ==============================
-# 7. 构建固件（两次：ext4 + efi）
-# ==============================
+# === 6. 构建固件 ===
 echo
-echo "🚀 开始构建固件..."
-
-# BIOS (ext4)
-echo "🔧 构建 BIOS (ext4) 镜像..."
-make image \
-    PROFILE="generic" \
-    PACKAGES="$PACKAGES" \
-    FILES="$FILES_DIR" \
-    ROOTFS_PARTSIZE="${PROFILE:-1024}"
-
-# UEFI (squashfs)
-echo "🔧 构建 UEFI (squashfs) 镜像..."
+echo "🚀 开始构建固件（已集成 OpenClash）..."
 make image \
     PROFILE="generic" \
     PACKAGES="$PACKAGES" \
@@ -157,35 +138,27 @@ make image \
     ROOTFS_PARTSIZE="${PROFILE:-1024}" \
     EFI_IMAGES=1
 
-echo "✅ 构建完成！"
-
-# ==============================
-# 8. 重命名输出（带秒级时间戳）
-# ==============================
+# === 7. 重命名输出文件（带秒级时间戳）===
 BASE_NAME="immortalwrt-24.10.4-x86-64-generic"
+for img_type in ext4 efi; do
+    SRC="${OUTPUT_DIR}/${BASE_NAME}-${img_type}-combined.img.gz"
+    if [ -f "$SRC" ]; then
+        DST="${OUTPUT_DIR}/immortalwrt-x86-64-${TIMESTAMP}-${img_type}-combined.img.gz"
+        mv "$SRC" "$DST"
+        echo "✅ 生成: $(basename "$DST")"
+    else
+        if [ "$img_type" = "ext4" ]; then
+            echo "❌ 错误：ext4 镜像未生成！"
+            exit 1
+        fi
+        echo "⚠️ 警告：efi 镜像未生成"
+    fi
+done
 
-# ext4 (BIOS)
-EXT4_SRC="${OUTPUT_DIR}/${BASE_NAME}-ext4-combined.img.gz"
-if [ -f "$EXT4_SRC" ]; then
-    mv "$EXT4_SRC" "${OUTPUT_DIR}/immortalwrt-x86-64-${TIMESTAMP}-bios-ext4-combined.img.gz"
-    echo "✅ BIOS (ext4): immortalwrt-x86-64-${TIMESTAMP}-bios-ext4-combined.img.gz"
-else
-    echo "❌ 错误：ext4 镜像未生成！"
-    exit 1
-fi
-
-# squashfs-efi (UEFI)
-EFI_SRC="${OUTPUT_DIR}/${BASE_NAME}-squashfs-combined-efi.img.gz"
-if [ -f "$EFI_SRC" ]; then
-    mv "$EFI_SRC" "${OUTPUT_DIR}/immortalwrt-x86-64-${TIMESTAMP}-efi-squashfs-combined.img.gz"
-    echo "✅ UEFI (squashfs): immortalwrt-x86-64-${TIMESTAMP}-efi-squashfs-combined.img.gz"
-else
-    echo "⚠️ UEFI 镜像未生成（可能 ImageBuilder 未启用 EFI 支持）"
-fi
-
-# 清理不需要的镜像
-rm -f "${OUTPUT_DIR}/${BASE_NAME}-squashfs-combined.img.gz" 2>/dev/null || true
+# 清理不需要的 squashfs 镜像
+SQFS="${OUTPUT_DIR}/${BASE_NAME}-squashfs-combined.img.gz"
+[ -f "$SQFS" ] && rm -f "$SQFS" && echo "🗑️ 已删除 squashfs 镜像"
 
 echo
-echo "🎉 构建成功！最终输出："
+echo "🎉 构建成功！固件已内置 OpenClash，开机即可使用。"
 ls -1 "${OUTPUT_DIR}"/immortalwrt-x86-64-"${TIMESTAMP}"-* 2>/dev/null || echo "❌ 未找到输出文件"
