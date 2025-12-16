@@ -100,12 +100,11 @@ chmod +x "$FILES_DIR/etc/openclash/core/clash_meta"
 wget -q "https://proxy.6866686.xyz/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -O "$FILES_DIR/etc/openclash/GeoIP.dat"
 wget -q "https://proxy.6866686.xyz/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -O "$FILES_DIR/etc/openclash/GeoSite.dat"
 
-# 创建必要目录
 mkdir -p "$FILES_DIR/etc/openclash/{backup,config,secret,yaml}"
 
-# === 6. 构建 UEFI 固件 ===
+# === 6. 构建 UEFI 固件（支持现代主板）===
 echo
-echo "🚀 开始构建 UEFI 固件（支持现代主板）..."
+echo "🚀 开始构建 UEFI 固件（支持 UEFI 启动）..."
 make image \
     PROFILE="generic" \
     PACKAGES="$PACKAGES" \
@@ -113,20 +112,21 @@ make image \
     ROOTFS_PARTSIZE="${PROFILE:-1024}" \
     EFI_IMAGES=1
 
-# === 7. 构建 BIOS 固件（Legacy 启动）===
+# === 7. 构建 BIOS 固件（支持老设备 Legacy 启动）===
 echo
-echo "🚀 开始构建 BIOS 固件（支持老设备）..."
+echo "🚀 开始构建 BIOS 固件（支持传统 BIOS 启动）..."
 make image \
     PROFILE="generic" \
     PACKAGES="$PACKAGES" \
     FILES="$FILES_DIR" \
-    ROOTFS_PARTSIZE="${PROFILE:-1024}"
-# 注意：这里不设置 EFI_IMAGES，即默认为 0
+    ROOTFS_PARTSIZE="${PROFILE:-1024}" \
+    EFI_IMAGES=0 \
+    TARGET_IMAGES="combined"
 
 # === 8. 重命名输出文件（区分 uefi / bios）===
 BASE_NAME="immortalwrt-24.10.4-x86-64-generic"
 
-# UEFI 镜像（带 -efi 后缀）
+# UEFI 镜像
 UEFI_SRC="${OUTPUT_DIR}/${BASE_NAME}-ext4-combined-efi.img.gz"
 if [ -f "$UEFI_SRC" ]; then
     mv "$UEFI_SRC" "${OUTPUT_DIR}/immortalwrt-x86-64-${TIMESTAMP}-ext4-combined-uefi.img.gz"
@@ -137,21 +137,21 @@ else
     exit 1
 fi
 
-# BIOS 镜像（无 -efi 后缀）
+# BIOS 镜像（关键：必须显式生成 combined）
 BIOS_SRC="${OUTPUT_DIR}/${BASE_NAME}-ext4-combined.img.gz"
 if [ -f "$BIOS_SRC" ]; then
     mv "$BIOS_SRC" "${OUTPUT_DIR}/immortalwrt-x86-64-${TIMESTAMP}-ext4-combined-bios.img.gz"
     echo "✅ 生成 BIOS 固件"
 else
-    echo "❌ BIOS 镜像未生成！"
+    echo "❌ BIOS 镜像未生成！请检查是否启用了 EFI_IMAGES=0 和 TARGET_IMAGES=combined"
     ls -l "${OUTPUT_DIR}/"
     exit 1
 fi
 
-# 清理 squashfs 镜像（可能有多个）
+# 清理不需要的 squashfs 镜像
 find "$OUTPUT_DIR" -name "*squashfs*" -delete && echo "🗑️ 已删除 squashfs 镜像"
 
 echo
 echo "🎉 双固件构建成功！"
-echo "📁 输出目录："
+echo "📁 输出文件："
 ls -1 "${OUTPUT_DIR}"/immortalwrt-x86-64-"${TIMESTAMP}"-*
