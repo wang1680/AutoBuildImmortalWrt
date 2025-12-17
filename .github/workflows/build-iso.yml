@@ -12,13 +12,17 @@ on:
         description: "选择luci版本"
         required: false
         default: "24.10.4"
-        输入: choice
+        type: choice
         options:
           - 24.10.0
           - 24.10.1
           - 24.10.2
           - 24.10.3
           - 24.10.4
+      custom_router_ip:
+        description: "请设置路由器的管理地址(仅对多网口路由器有效) 格式:192.168.x.1 或 10.x.x.1"
+        required: true
+        default: "192.168.100.1"
       profile:
         description: '请输入要编译固件大小 单位(MB)'
         required: true
@@ -27,7 +31,7 @@ on:
         description: "是否编译 Docker 插件"
         required: true
         default: 'yes'
-        输入: choice
+        type: choice
         options:
           - 'yes'
           - 'no'
@@ -61,6 +65,12 @@ jobs:
 
       - name: Set executable permissions
         run: chmod +x ${{ github.workspace }}/x86-64/build24.sh
+
+      - name: Save Custom Router IP into OpenWrt files
+        run: |
+          mkdir -p "${{ github.workspace }}/files/etc/config"
+          echo "${{ inputs.custom_router_ip }}" > "${{ github.workspace }}/files/etc/config/custom_router_ip.txt"
+          echo "您设置的路由器管理地址是:${{ inputs.custom_router_ip }}"
       
       - name: Enable Store integration
         run: |
@@ -106,7 +116,7 @@ jobs:
 
       - name: ✅ 复制固件到根目录
         run: |
-          cp ${{ github.workspace }}/bin/targets/x86/64/*ext4-combined.img.gz ${{ github.workspace }}
+          cp ${{ github.workspace }}/bin/targets/x86/64/*ext4-combined*.img.gz ${{ github.workspace }}
 
       - name: ✅ 上传固件到 artifact (for ISO generation)
         uses: actions/upload-artifact@v4
@@ -125,10 +135,26 @@ jobs:
         with:
           name: firmware-img
 
+      - name: Install dependencies for ISO generation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xorriso \
+            genisoimage \
+            grub-pc-bin \
+            grub-efi-amd64-bin \
+            mtools \
+            dosfstools \
+            rsync \
+            squashfs-tools \
+            xz-utils \
+            p7zip-full \
+            wget \
+            curl
+
       - name: ⏬ 同步 img-installer 项目 准备制作ISO
         run: |
           git clone https://github.com/wukongdaily/img-installer.git
-          cd img-installer
 
       - name: Set executable permissions for scripts
         run: |
@@ -137,9 +163,32 @@ jobs:
 
       - name: ✅ 制作 ISO
         run: |
-          firmware_file=$(ls *ext4-combined.img.gz)
-          cd img-installer
-          bash autobuild/autobuild.sh "../$firmware_file"
+          set -euo pipefail
+          shopt -s nullglob
+
+          firmware_files=( *ext4-combined*.img.gz )
+          if [ ${#firmware_files[@]} -eq 0 ]; then
+            echo "❌ 未找到固件: *ext4-combined*.img.gz"
+            ls -lah
+            exit 1
+          fi
+
+          for firmware_file in "${firmware_files[@]}"; do
+            echo "\n==> Building installer ISO for: ${firmware_file}"
+            (cd img-installer && bash autobuild/autobuild.sh "../${firmware_file}")
+
+            if [ -f "img-installer/output/custom-installer-x86_64.iso" ]; then
+              base_name=$(basename "${firmware_file}" .img.gz)
+              mv "img-installer/output/custom-installer-x86_64.iso" "custom-installer-${base_name}.iso"
+            fi
+          done
+
+      - name: ✅ 上传 ISO 到 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-iso
+          path: |
+            *.iso
 
       - name: 🚀 上传 ISO 到 Release
         uses: softprops/action-gh-release@v2.2.1
@@ -147,5 +196,5 @@ jobs:
           tag_name: "Custom-Installer-x86_64-ISO"
           body_path: "${{ github.workspace }}/img-installer/autobuild/info.md"
           files: |
-            img-installer/output/custom-installer-x86_64.iso
+            *.iso
           token: "${{ secrets.GITHUB_TOKEN }}"
